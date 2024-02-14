@@ -1,12 +1,24 @@
 var audioCtx;
 var globalGain;
+var partials = 4;
+var modulatorFreq;
+var modulatorIndex;
+
 
 document.addEventListener("DOMContentLoaded", function(event) {
+    if(!audioCtx){
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        globalGain = audioCtx.createGain(); //this will control the volume of all notes
+        globalGain.gain.setValueAtTime(0.8, audioCtx.currentTime)
+        globalGain.connect(audioCtx.destination);
+    }
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
 
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    globalGain = audioCtx.createGain(); //this will control the volume of all notes
-    globalGain.gain.setValueAtTime(0.8, audioCtx.currentTime)
-    globalGain.connect(audioCtx.destination);
+    if (audioCtx.state === 'running') {
+        audioCtx.suspend();
+    }
 
 })
 
@@ -112,23 +124,129 @@ function keyUp(event) {
 
 function playNote(key) {
     const waveform = document.querySelector('input[name="waveform"]:checked').value;
-   
+    const checkedSynthesis = document.querySelectorAll('input[name=synthesis]:checked');
+    let isAdditive = false;
+    let isAM = false;
+    let isFM = false;
+    checkedSynthesis.forEach(function(e){
+        if (e.value === "additive"){
+            isAdditive = true;
+        }
+        else if (e.value === "AM"){
+            isAM = true;
+        }
+        else if (e.value === "FM"){
+            isFM = true;
+        }
+    });
+
     const gainNode = audioCtx.createGain();
-    // gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-    
-    
-    const osc = audioCtx.createOscillator();
-    osc.frequency.setValueAtTime(keyboardFrequencyMap[key], audioCtx.currentTime)
-    osc.type = waveform
-    // osc.connect(audioCtx.destination)
-    osc.start();
-    
+    gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
     gainNode.gain.exponentialRampToValueAtTime(0.4, audioCtx.currentTime + 0.1);
-
     gainNode.gain.setTargetAtTime(0.2, audioCtx.currentTime + 0.3, 0.2);  
-    osc.connect(gainNode).connect(globalGain) //you will need a new gain node for each node to control the adsr of that note
 
-    activeOscillators[key] = osc
+    oscList = [];
+
+    // Additive Synthesis
+    function additiveSyn() {
+        for (let i = 0; i < 4; i++) {
+            osc = audioCtx.createOscillator();
+            osc.frequency.value = keyboardFrequencyMap[key] * (i + 1) + Math.random()  * 15;
+            osc.type = waveform;
+            osc.connect(gainNode).connect(globalGain);
+            oscList.push(osc);
+            osc.start();
+
+            if (i == 0 || i == 2) {
+                var lfo = audioCtx.createOscillator();
+                lfo.frequency.value = 0.5;
+                lfoGain = audioCtx.createGain();
+                lfoGain.gain.value = 8;
+                lfo.connect(lfoGain).connect(osc.frequency);
+                lfo.start();
+            }
+        }
+        
+    }
+
+    // AM Synthesis
+    function amplitudeMod() {
+        var carrier = audioCtx.createOscillator();
+        modulatorFreq = audioCtx.createOscillator();
+        modulatorFreq.frequency.value = 100;
+        carrier.frequency.value = keyboardFrequencyMap[key];
+
+        const modulated = audioCtx.createGain();
+        const depth = audioCtx.createGain();
+        depth.gain.value = 0.5 //scale modulator output to [-0.5, 0.5]
+        modulated.gain.value = 1.0 - depth.gain.value; //a fixed value of 0.5
+
+        modulatorFreq.connect(depth).connect(modulated.gain); //.connect is additive, so with [-0.5,0.5] and 0.5, the modulated signal now has output gain at [0,1]
+        carrier.connect(modulated)
+        modulated.connect(gainNode).connect(globalGain);
+        
+        carrier.start();
+        modulatorFreq.start();
+
+        var lfo = audioCtx.createOscillator();
+        lfo.frequency.value = 2;
+        lfoGain = audioCtx.createGain();
+        lfoGain.gain.value = 300;
+        lfo.connect(lfoGain).connect(modulatorFreq.frequency);
+        lfo.start();
+    }
+
+    // FM Synthesis
+    function frequencyMod() {
+        var carrier = audioCtx.createOscillator();
+        modulatorFreq = audioCtx.createOscillator();
+        carrier.frequency.value = keyboardFrequencyMap[key];
+
+        modulationIndex = audioCtx.createGain();
+        modulationIndex.gain.value = 100;
+        modulatorFreq.frequency.value = 100;
+
+        modulatorFreq.connect(modulationIndex);
+        modulationIndex.connect(carrier.frequency)
+        
+        carrier.connect(gainNode).connect(globalGain);
+
+        carrier.start();
+        modulatorFreq.start();
+
+        var lfo = audioCtx.createOscillator();
+        lfo.frequency.value = 2;
+        lfoGain = audioCtx.createGain();
+        lfoGain.gain.value = 300;
+        lfo.connect(lfoGain).connect(modulatorFreq.frequency);
+        lfo.start();
+    }
+   
+    
+    
+    // // gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+    
+    
+    // const osc = audioCtx.createOscillator();
+    // osc.frequency.setValueAtTime(keyboardFrequencyMap[key], audioCtx.currentTime)
+    // osc.type = waveform
+    // // osc.connect(audioCtx.destination)
+    // osc.start();
+    
+    // osc.connect(gainNode).connect(globalGain) //you will need a new gain node for each node to control the adsr of that note
+
+    if(isAdditive){
+        console.log("additive");
+        additiveSyn();
+    }
+    if(isAM){
+        amplitudeMod();
+    }
+    if(isFM){
+        frequencyMod();
+    }
+
+    activeOscillators[key] = oscList;
     gainNodes[key] = gainNode;
     updateGain();
 }
@@ -143,6 +261,18 @@ function updateGain(){
     globalGain.gain.setValueAtTime(newGlobalGain, audioCtx.currentTime)
 }
 
+function updatePartials(value){
+    partials = value;
+}
+
+function updateModFreq(value){
+    modulatorFreq.frequency.value = value;
+}
+
+function updateModIdx(value){
+    modulatorIndex.gain.value = value;
+}
+
 function showCat(key){
     var img = document.createElement("img");
     img.src = catMap[key];
@@ -152,9 +282,9 @@ function showCat(key){
     const top = document.body.clientHeight * Math.random();
     const left = document.body.clientWidth * Math.random();
     
-    if(top < 150 && left < 270){
-        img.style.top = (top + 150)  + 'px';
-        img.style.left = left + 270  + 'px';
+    if(left < 350){
+        img.style.top = top  + 'px';
+        img.style.left = left + 350  + 'px';
     }
     else{
         img.style.top = top  + 'px';
